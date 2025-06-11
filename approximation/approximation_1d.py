@@ -16,7 +16,7 @@ import argparse
 
 from data import get_data
 from networks import get_network
-from utils import normalization
+from utils import normalization_by_points
 
 parser = argparse.ArgumentParser(description="SincKAN")
 parser.add_argument("--mode", type=str, default='train', help="mode of the network, "
