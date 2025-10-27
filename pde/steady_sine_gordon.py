@@ -21,23 +21,23 @@ from utils import normalization
 parser = argparse.ArgumentParser(description="SincKAN")
 parser.add_argument("--mode", type=str, default='train', help="mode of the network, "
                                                               "train: start training, eval: evaluation")
-parser.add_argument("--datatype", type=str, default='poisson', help="type of data")
-parser.add_argument("--ntest", type=int, default=1000, help="the number of testing dataset")
-parser.add_argument("--n_interior", type=int, default=500,
+parser.add_argument("--datatype", type=str, default='sine_gordon', help="type of data")
+parser.add_argument("--ntest", type=int, default=10000, help="the number of testing dataset")
+parser.add_argument("--n_interior", type=int, default=2000,
                     help="the number of interior training dataset for each epochs")
-parser.add_argument("--n_boundary", type=int, default=500,
+parser.add_argument("--n_boundary", type=int, default=1000,
                     help="the number of boundary training dataset for each epochs")
-parser.add_argument("--dim", type=int, default=10, help="dim of the problem")
-parser.add_argument("--ite", type=int, default=20, help="the number of iteration")
-parser.add_argument("--epochs", type=int, default=50000, help="the number of epochs")
+parser.add_argument("--dim", type=int, default=100, help="dim of the problem")
+parser.add_argument("--ite", type=int, default=100, help="the number of iteration")
+parser.add_argument("--epochs", type=int, default=10000, help="the number of epochs")
 parser.add_argument("--lr", type=float, default=1e-2, help="learning rate")
 parser.add_argument("--seed", type=int, default=0, help="the name")
 parser.add_argument("--activation", type=str, default='tanh', help='the activation function')
 parser.add_argument("--noise", type=int, default=0, help="add noise or not, 0: no noise, 1: add noise")
 parser.add_argument("--normalization", type=int, default=0, help="add normalization or not, 0: no normalization, "
                                                                  "1: add normalization")
-parser.add_argument("--interval", type=str, default="-1.0,1.0", help='boundary of the interval')
-parser.add_argument("--network", type=str, default="mlp", help="type of network")
+parser.add_argument("--interval", type=str, default="0.0,1.0", help='boundary of the interval')
+parser.add_argument("--network", type=str, default="sinckan", help="type of network")
 parser.add_argument("--kanshape", type=str, default="8", help='shape of the network (KAN)')
 parser.add_argument("--degree", type=int, default=8, help='degree of polynomials')
 parser.add_argument("--features", type=int, default=100, help='width of the network')
@@ -47,15 +47,27 @@ parser.add_argument("--init_h", type=float, default=2.0, help='initial value of 
 parser.add_argument("--decay", type=str, default='inverse', help='decay type for h')
 parser.add_argument("--skip", type=int, default=1, help='1: use skip connection for sinckan')
 parser.add_argument("--embed_feature", type=int, default=10, help='embedding features of the modified MLP')
-parser.add_argument("--alpha", type=float, default=1, help='parameters for the width of poission')
+parser.add_argument("--alpha", type=float, default=10, help='parameters for the width of poission')
+parser.add_argument("--initialization", type=str, default=None, help='the type of initialization of SincKAN')
 parser.add_argument("--device", type=int, default=3, help="cuda number")
 args = parser.parse_args()
 
 os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
 
-def right_hand_side(x,alpha,dim):
-    f=2*alpha*jnp.exp(-alpha*jnp.sum(x**2))*(2*alpha*jnp.sum(x**2)-dim)
+
+def solution_jax(x, alpha, c):
+    A = jnp.mean(jnp.exp(-c * x[:-2] * x[1:-1] * x[2:]))
+    B = -alpha * jnp.sum(x ** 2)
+    return A * jnp.exp(B)
+
+
+def right_hand_side(x, alpha, c, dim):
+    u = lambda model, alpha, c, *x: model(jnp.stack([*x]), alpha, c)
+    f = jnp.sum(
+        jnp.stack([grad(grad(u, argnums=i + 3), argnums=i + 3)(solution_jax, alpha, c, *x) for i in range(dim)])) \
+        + jnp.sin(u(solution_jax, alpha, c, *x))
     return f
+
 
 class interior_points():
     def __init__(self, dim, interval=(-1, 1)):
@@ -69,12 +81,13 @@ class interior_points():
 
 
 class boundary_points():
-    def __init__(self, dim, generate_data, interval=(-1, 1), alpha=100):
+    def __init__(self, dim, generate_data, interval=(-1, 1), alpha=100, c=0):
         self.dim = dim
         self.points = jnp.linspace(interval[0], interval[1], 100)
         self.interval = interval
         self.generate_data = generate_data
         self.alpha = alpha
+        self.c = c
 
     def sample(self, num, key):
         keys = random.split(key, self.dim + 1)
@@ -84,7 +97,7 @@ class boundary_points():
         idx_bd = jax.random.randint(keys[1], num, 0, self.dim)
         vset = lambda p, idx, value: p.at[idx].set(value)
         x = vmap(vset, (0, 0, 0))(x, idx_bd, boundary)
-        y = self.generate_data(x, self.alpha)
+        y = self.generate_data(x, self.alpha, self.c)
         return x, y
 
 
@@ -92,20 +105,26 @@ def net(model, frozen_para, *x):
     return model(jnp.stack([*x]), frozen_para)[0]
 
 
-def residual(model, x, frozen_para,r_s):
-    f = 0
-    for i in range(args.dim):
-        u_xx = grad(grad(net, argnums=i + 2), argnums=i + 2)(model, frozen_para, *x)
-        f = f + u_xx
+def residual(model, x, frozen_para, r_s):
+    dim = x.shape[0]
+    u_output = net(model, frozen_para, *x)
+    f = jnp.sum(jnp.stack([grad(grad(net, argnums=i + 2), argnums=i + 2)(model, frozen_para, *x) for i in range(dim)])) \
+        + jnp.sin(u_output)
     return f - r_s
 
-def boundary(model,x,frozen_para):
+
+def boundary(model, x, frozen_para):
     return net(model, frozen_para, *x)
 
+
+def output_test(model, x, frozen_para):
+    return net(model, frozen_para, *x)
+
+
 def compute_loss(model, ob_x, ob_sup, frozen_para):
-    res = vmap(residual, (None, 0, None, 0))(model, ob_x[:,:-1], frozen_para, ob_x[:,-1])
+    res = vmap(residual, (None, 0, None, 0))(model, ob_x[:, :-1], frozen_para, ob_x[:, -1])
     r = (res ** 2).mean()
-    ob_b = vmap(boundary, (None, 0,None))(model, ob_sup[:,:-1],frozen_para)
+    ob_b = vmap(boundary, (None, 0, None))(model, ob_sup[:, :-1], frozen_para)
     l_b = ((ob_b - ob_sup[:, -1]) ** 2).mean()
     return r + 100 * l_b
 
@@ -125,11 +144,13 @@ def train(key):
     keys = random.split(key, 3)
     # Get hyterparameters
     interval = args.interval.split(',')
-    alpha=args.alpha
     dim = args.dim
-    ntest=args.ntest
+    alpha = args.alpha / dim
+    vec_c = abs(np.random.normal(0, 1, (dim - 2,)))
+    vec_c = vec_c
+    ntest = args.ntest
     N_interior = args.n_interior
-    N_b = args.n_boundary
+    N_b = args.n_boundary * dim
     N_epochs = args.epochs
     ite = args.ite
     learning_rate = args.lr
@@ -137,12 +158,12 @@ def train(key):
     # Generate sampled data
     lowb, upb = float(interval[0]), float(interval[1])
     interval = [lowb, upb]
-    x_b_set = boundary_points(dim=dim, generate_data=generate_data, interval=interval, alpha=alpha)
+    x_b_set = boundary_points(dim=dim, generate_data=generate_data, interval=interval, alpha=alpha, c=vec_c)
     x_in_set = interior_points(dim=dim, interval=interval)
     x_test = jnp.concatenate([x_in_set.sample(num=int(ntest * 0.8), key=keys[0]),
                               x_b_set.sample(num=int(ntest * 0.2), key=keys[1])[0]], 0)
 
-    y_test = generate_data(x_test, alpha=alpha)
+    y_test = generate_data(x_test, alpha=alpha, c=vec_c)
     normalizer = normalization(interval, dim, args.normalization)
     input_dim = dim
     output_dim = 1
@@ -158,47 +179,48 @@ def train(key):
     optim = optax.adam(learning_rate=sc)
     opt_state = optim.init(eqx.filter(model, eqx.is_array))
 
-    keys = random.split(keys[-1], 3)
-    input_points = x_in_set.sample(N_interior, keys[0])
-    ob_x = jnp.concatenate([input_points,
-                            vmap(right_hand_side,(0,None,None))(input_points,alpha,dim).reshape(-1,1)],-1)
-    x_b, y_b = x_b_set.sample(N_b, keys[1])
-    ob_sup = jnp.concatenate([x_b, y_b], -1)
     history = []
     T = []
     errors = []
     for j in range(ite * N_epochs):
+        if j % N_epochs == 0:
+            # sample
+            keys = random.split(keys[-1], 3)
+            input_points = x_in_set.sample(N_interior, keys[0])
+            ob_x = jnp.concatenate([input_points,
+                                    vmap(right_hand_side, (0, None, None, None))(input_points, alpha, vec_c, dim,
+                                                                                 ).reshape(-1, 1)],
+                                   -1)
+            x_b, y_b = x_b_set.sample(N_b, keys[1])
+            ob_sup = jnp.concatenate([x_b, y_b], -1)
+
         T1 = time.time()
-        loss, model, opt_state = make_step(model, ob_x, ob_sup, frozen_para, optim, opt_state,)
+        loss, model, opt_state = make_step(model, ob_x, ob_sup, frozen_para, optim, opt_state, )
         T2 = time.time()
         T.append(T2 - T1)
         history.append(loss.item())
         if j % N_epochs == 0:
-            keys = random.split(keys[-1], 3)
-            input_points = x_in_set.sample(N_interior, keys[0])
-            ob_x = jnp.concatenate([input_points,
-                                    vmap(right_hand_side, (0, None, None))(input_points, alpha, dim).reshape(-1, 1)],
-                                   -1)
-            x_b, y_b = x_b_set.sample(N_b, keys[1])
-            ob_sup = jnp.concatenate([x_b, y_b], -1)
-            y_pred = vmap(net, (None, None, 0))(model, frozen_para, x_test)
+            # test
+            y_pred = vmap(output_test, (None, 0, None))(model, x_test, frozen_para)
             mse_error = jnp.mean((y_pred.flatten() - y_test.flatten()) ** 2)
             relative_error = jnp.linalg.norm(y_pred.flatten() - y_test.flatten()) / jnp.linalg.norm(y_test.flatten())
+            errors.append(relative_error)
             print(f'testing mse: {mse_error:.2e},relative: {relative_error:.2e}')
 
     avg_time = np.mean(np.array(T))
     print(f'time: {1 / avg_time:.2e}ite/s')
 
-    y_pred = vmap(net, (None, None, 0))(model, frozen_para, x_test)
+    y_pred = vmap(output_test, (None, 0, None))(model, x_test, frozen_para)
     mse_error = jnp.mean((y_pred.flatten() - y_test.flatten()) ** 2)
     relative_error = jnp.linalg.norm(y_pred.flatten() - y_test.flatten()) / jnp.linalg.norm(y_test.flatten())
+    errors.append(relative_error)
     print(f'testing mse: {mse_error:.2e},relative: {relative_error:.2e}')
 
     # save model and results
-    path = f'{args.datatype}_{args.network}_{args.seed}_{args.alpha}_{args.dim}.eqx'
+    path = f'./results/sine_gordon/{args.datatype}_{args.network}_{args.seed}_{args.alpha}_{args.dim}.eqx'
     eqx.tree_serialise_leaves(path, model)
-    path = f'{args.datatype}_{args.network}_{args.seed}_{args.alpha}_{args.dim}.npz'
-    np.savez(path, loss=history, avg_time=avg_time, y_pred=y_pred, y_test=y_test, errors=errors)
+    path = f'./results/sine_gordon/{args.datatype}_{args.network}_{args.seed}_{args.alpha}_{args.dim}.npz'
+    np.savez(path, loss=history, avg_time=avg_time, y_pred=y_pred, y_test=y_test, x_test=x_test, errors=errors)
 
     # print the parameters
     param_count = sum(x.size if eqx.is_array(x) else 0 for x in jax.tree.leaves(model))
@@ -218,19 +240,22 @@ def train(key):
 
 def eval(key):
     # Generate sampled data
+    dim = args.dim
     interval = args.interval.split(',')
     lowb, upb = float(interval[0]), float(interval[1])
     interval = [lowb, upb]
-    x_test = np.linspace(lowb, upb, num=args.ntest)[:, None]
-    generate_data = get_data(args.datatype)
-    y_test = generate_data(x_test, alpha=args.alpha)
+    x_b_set = boundary_points(dim=dim, generate_data=generate_data, interval=interval, alpha=alpha, c=vec_c)
+    x_in_set = interior_points(dim=dim, interval=interval)
+    x_test = jnp.concatenate([x_in_set.sample(num=int(ntest * 0.8), key=keys[0]),
+                              x_b_set.sample(num=int(ntest * 0.2), key=keys[1])[0]], 0)
+
+    y_test = generate_data(x_test, alpha=alpha, c=vec_c)
     normalizer = normalization(x_test, args.normalization)
 
-    input_dim = 1
+    input_dim = dim
     output_dim = 1
 
     # Choose the model
-    keys = random.split(key, 2)
     model = get_network(args, input_dim, output_dim, interval, normalizer, keys)
     frozen_para = model.get_frozen_para()
     path = f'{args.datatype}_{args.network}_{args.seed}_{args.alpha}.eqx'

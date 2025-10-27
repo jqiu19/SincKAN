@@ -25,6 +25,7 @@ parser.add_argument("--datatype", type=str, default='ns_tg', help="type of data"
 parser.add_argument("--npoints", type=int, default=100, help="the number of total dataset")
 parser.add_argument("--ntest", type=int, default=100, help="the number of testing dataset")
 parser.add_argument("--ntrain", type=int, default=50000, help="the number of training dataset for each epochs")
+parser.add_argument("--dim", type=int, default=3, help="dimension of the problem")
 parser.add_argument("--ite", type=int, default=30, help="the number of iteration")
 parser.add_argument("--epochs", type=int, default=50000, help="the number of epochs")
 parser.add_argument("--lr", type=float, default=1e-2, help="learning rate")
@@ -42,6 +43,7 @@ parser.add_argument("--len_h", type=int, default=1, help='lenth of k for sinckan
 parser.add_argument("--init_h", type=float, default=2.0, help='initial value of h')
 parser.add_argument("--decay", type=str, default='inverse', help='decay type for h')
 parser.add_argument("--embed_feature", type=int, default=10, help='embedding features of the modified MLP')
+parser.add_argument("--initialization", type=str, default=None, help='the type of initialization of SincKAN')
 parser.add_argument("--device", type=int, default=3, help="cuda number")
 args = parser.parse_args()
 
@@ -172,7 +174,7 @@ def train(key):
     input_dim = 3
     output_dim = 3
     # Choose the model
-    normalizer = normalization(x1_train, args.normalization)
+    normalizer = normalization(interval,args.dim, args.normalization,is_t=1)
     keys = random.split(key, 2)
     model = get_network(args, input_dim, output_dim, interval, normalizer, keys)
     frozen_para = model.get_frozen_para()
@@ -273,7 +275,7 @@ def eval(key):
     input_dim = 3
     output_dim = 3
     # Choose the model
-    normalizer = normalization(x1_test, args.normalization)
+    normalizer = normalization(interval,args.dim, args.normalization,is_t=1)
     keys = random.split(key, 2)
     model = get_network(args, input_dim, output_dim, interval, normalizer, keys)
     frozen_para = model.get_frozen_para()

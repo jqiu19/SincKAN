@@ -25,6 +25,7 @@ parser.add_argument("--datatype", type=str, default='nonlinear', help="type of d
 parser.add_argument("--npoints", type=int, default=1000, help="the number of total dataset")
 parser.add_argument("--ntest", type=int, default=1000, help="the number of testing dataset")
 parser.add_argument("--ntrain", type=int, default=500, help="the number of training dataset for each epochs")
+parser.add_argument("--dim", type=int, default=1, help="dimension of the problem")
 parser.add_argument("--ite", type=int, default=20, help="the number of iteration")
 parser.add_argument("--epochs", type=int, default=50000, help="the number of epochs")
 parser.add_argument("--lr", type=float, default=1e-2, help="learning rate")
@@ -43,6 +44,7 @@ parser.add_argument("--init_h", type=float, default=2.0, help='lenth of k for si
 parser.add_argument("--decay", type=str, default='inverse', help='decay type for h')
 parser.add_argument("--embed_feature", type=int, default=10, help='embedding features of the modified MLP')
 parser.add_argument("--alpha", type=float, default=100, help='boundary layer parameters')
+parser.add_argument("--initialization", type=str, default=None, help='the type of initialization of SincKAN')
 parser.add_argument("--device", type=int, default=3, help="cuda number")
 args = parser.parse_args()
 
@@ -104,7 +106,7 @@ def train(key):
     y_train = generate_data(x_train)
 
     y_test = generate_data(x_test)
-    normalizer = normalization(x_train, args.normalization)
+    normalizer = normalization(interval,args.dim, args.normalization)
     ob_x = x_train
     index_b = [0, -1]
     x_b = x_train[index_b, :]
@@ -196,7 +198,7 @@ def eval(key):
     generate_data = get_data(args.datatype)
 
     y_test = generate_data(x_test)
-    normalizer = normalization(x_test, args.normalization)
+    normalizer = normalization(interval,args.dim, args.normalization)
 
     input_dim = 1
     output_dim = 1

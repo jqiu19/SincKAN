@@ -25,6 +25,7 @@ parser.add_argument("--datatype", type=str, default='bl2d', help="type of data")
 parser.add_argument("--npoints", type=int, default=100, help="the number of total dataset")
 parser.add_argument("--ntest", type=int, default=100, help="the number of testing dataset")
 parser.add_argument("--ntrain", type=int, default=5000, help="the number of training dataset for each epochs")
+parser.add_argument("--dim", type=int, default=2, help="dimension of the problem")
 parser.add_argument("--ite", type=int, default=30, help="the number of iteration")
 parser.add_argument("--epochs", type=int, default=50000, help="the number of epochs")
 parser.add_argument("--lr", type=float, default=1e-2, help="learning rate")
@@ -43,6 +44,7 @@ parser.add_argument("--init_h", type=float, default=2.0, help='initial value of 
 parser.add_argument("--decay", type=str, default='inverse', help='decay type for h')
 parser.add_argument("--embed_feature", type=int, default=10, help='embedding features of the modified MLP')
 parser.add_argument("--alpha", type=float, default=100, help='boundary layer parameters')
+parser.add_argument("--initialization", type=str, default=None, help='the type of initialization of SincKAN')
 parser.add_argument("--device", type=int, default=3, help="cuda number")
 args = parser.parse_args()
 
@@ -109,7 +111,7 @@ def train(key):
     x2_test = x2_test.reshape(-1, 1)
     u_train = u_train.reshape(-1, 1)
 
-    normalizer = normalization(x1_train, args.normalization)
+    normalizer = normalization(interval, args.dim, args.normalization)
     ob_x = np.concatenate([x1_train, x2_train], -1)
     index_b = np.zeros((args.npoints, args.npoints))
     index_b[:, 0] = 1
@@ -206,7 +208,7 @@ def eval(key):
     x1_test = x1_test.reshape(-1, 1)
     x2_test = x2_test.reshape(-1, 1)
 
-    normalizer = normalization(x1_test, args.normalization)
+    normalizer = normalization(interval, args.dim, args.normalization)
 
     input_dim = 2
     output_dim = 1
